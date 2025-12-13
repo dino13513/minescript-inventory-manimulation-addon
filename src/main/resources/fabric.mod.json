@@ -1,0 +1,40 @@
+{
+	"schemaVersion": 1,
+	"id": "minescript_inv_manimulation_addon",
+	"version": "${version}",
+	"name": "Minescript Inventory Manimulation Addon",
+	"description": "This mod adds support to move items in inventories for the Minescript mod cuz minescript dont have build in inventory manipulation and i call that bullshit",
+	"authors": [
+		"dino13513"
+	],
+	"contact": {
+		"homepage": "https://fabricmc.net/",
+		"sources": "https://github.com/FabricMC/fabric-example-mod"
+	},
+	"license": "MIT",
+	"icon": "assets/minescript_inv_manimulation_addon/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"com.dino13513.minescript_inv_addon.MinescriptInventoryManimulationAddon"
+		],
+		"fabric-datagen": [
+			"com.dino13513.minescript_inv_addon.MinescriptInventoryManimulationAddonDataGenerator"
+		],
+        "client": [
+          "com.dino13513.minescript_inv_addon.MinescriptInventoryManipulationAddonClient"
+        ]
+	},
+	"mixins": [
+		"minescript_inv_manimulation_addon.mixins.json"
+	],
+	"depends": {
+		"fabricloader": ">=0.18.2",
+		"minecraft": "~1.21.10",
+		"java": ">=21",
+		"fabric-api": "*"
+	},
+	"suggests": {
+		"another-mod": "Minescript"
+	}
+}
