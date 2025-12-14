@@ -1,40 +1,61 @@
 package com.dino13513.minescript_inv_addon;
 
 import net.fabricmc.api.ClientModInitializer;
-import net.fabricmc.api.ModInitializer;
+import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
+import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.screen.ScreenHandler;
 import net.minecraft.screen.slot.SlotActionType;
-
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.net.ServerSocket;
-import java.net.Socket;
-
-
+import net.minecraft.text.Text;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.*;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+
+import com.mojang.brigadier.arguments.StringArgumentType;
+
 public class MinescriptInventoryManipulationAddonClient implements ClientModInitializer {
-    public static final String MOD_ID = "minescript_inv_manimulation_addon";
+    public static final String MOD_ID = "minescript_inv_maniulation_addon";
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
-    public static final int PORT = 25566; // python will connect to this
+    public static final int PORT = 25566;
+
+    private volatile BufferedWriter clientWriter;
+    private final Object sendLock = new Object();
+    private final BlockingQueue<String> commandQueue = new LinkedBlockingQueue<>();
+    private String lastCommand = "";
 
     @Override
     public void onInitializeClient() {
-        System.out.println("MinaMod loaded (inventory manip addon)");
+        System.out.println("MinaMod loaded (inventory manipulation addon)");
 
+        startTCPServer();
+        startCommandProcessor();
+        registerMinatestCommand();
+    }
+
+    private void startTCPServer() {
         Thread serverThread = new Thread(() -> {
             try (ServerSocket server = new ServerSocket(PORT)) {
                 System.out.println("MinaMod TCP server running on " + PORT);
 
                 while (true) {
                     Socket client = server.accept();
-                    BufferedReader reader = new BufferedReader(new InputStreamReader(client.getInputStream()));
+
+                    BufferedReader reader = new BufferedReader(
+                            new InputStreamReader(client.getInputStream())
+                    );
+
+                    clientWriter = new BufferedWriter(
+                            new OutputStreamWriter(client.getOutputStream())
+                    );
 
                     String line;
                     while ((line = reader.readLine()) != null) {
-                        handleCommand(line);
+                        commandQueue.offer(line);
                     }
                 }
 
@@ -47,110 +68,158 @@ public class MinescriptInventoryManipulationAddonClient implements ClientModInit
         serverThread.start();
     }
 
-    private void handleCommand(String msg) {
-        try {
-            System.out.println("Received: " + msg);
-            LOGGER.info("Received command: "+ msg);
-
-            String[] parts = msg.split(" ");
-            if (parts.length < 2) return; // not enough arguments
-
-            String cmd = parts[0];
-            int slot = Integer.parseInt(parts[1]);
-            int slot2 = (parts.length > 2) ? Integer.parseInt(parts[2]) : 0;
-
-            // clamp hotbar slot for TOHOTBAR
-            final int hotbarSlot = Math.max(0, Math.min(slot2, 8));
-
+    private void startCommandProcessor() {
+        Thread processorThread = new Thread(() -> {
             MinecraftClient client = MinecraftClient.getInstance();
-            if (client.player == null || client.player.currentScreenHandler == null) return;
-
-            ScreenHandler handler = client.player.currentScreenHandler;
-
-            // run inventory actions on the main client thread
-            client.execute(() -> {
+            while (true) {
                 try {
-                    switch (cmd) {
-                        case "PRESS":
-                            client.interactionManager.clickSlot(
-                                    handler.syncId,
-                                    slot,
-                                    0,
-                                    SlotActionType.PICKUP,
-                                    client.player
-                            );
-                            LOGGER.info("pressed slot: "+slot);
-                            break;
+                    String cmdLine = commandQueue.take(); // blocks until a command is available
+                    handleCommand(client, cmdLine);
+                    Thread.sleep(50);
+                } catch (InterruptedException ignored) {}
+            }
+        });
 
-                        case "SHIFTPRESS":
-                            client.interactionManager.clickSlot(
-                                    handler.syncId,
-                                    slot,
-                                    0,
-                                    SlotActionType.QUICK_MOVE,
-                                    client.player
-                            );
-                            LOGGER.info("Quick moved slot: "+slot);
-                            break;
+        processorThread.setDaemon(true);
+        processorThread.start();
+    }
 
-                        case "MOVE":
-                            client.interactionManager.clickSlot(
-                                    handler.syncId,
-                                    slot,
-                                    0,
-                                    SlotActionType.PICKUP,
-                                    client.player
-                            );
-                            try {
-                                Thread.sleep(50); // small delay between pick up and drop
-                            } catch (InterruptedException ignored) {
-                            }
-                            client.interactionManager.clickSlot(
-                                    handler.syncId,
-                                    slot2, // use hotbarSlot here if this is the target slot
-                                    0,
-                                    SlotActionType.PICKUP,
-                                    client.player
-                            );
-                            LOGGER.info("moved slot: "+slot+" to slot: "+slot2);
-                            break;
+    private void registerMinatestCommand() {
+        ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
+            dispatcher.register(
+                    ClientCommandManager.literal("minatest")
+                            .then(ClientCommandManager.argument("arg", StringArgumentType.word())
+                                    .executes(context -> {
+                                        String arg = StringArgumentType.getString(context, "arg");
+                                        handleMinatestCommand(arg);
+                                        return 1;
+                                    })
+                            )
+            );
+        });
+    }
 
-                        case "TOHOTBAR":
-                            client.interactionManager.clickSlot(
-                                    handler.syncId,
-                                    slot,
-                                    hotbarSlot, // correctly use final variable
-                                    SlotActionType.SWAP,
-                                    client.player
-                            );
-                            LOGGER.info("swapped slot: "+slot+" to hotbar slot: "+hotbarSlot);
-                            break;
-                        case "DROP":
-                            client.interactionManager.clickSlot(
-                                    handler.syncId,
-                                    slot, // use hotbarSlot here if this is the target slot
-                                    1,
-                                    SlotActionType.THROW,
-                                    client.player
-                            );
-                            LOGGER.info("dropped slot: "+slot);
-                        case "DROPONE":
-                            client.interactionManager.clickSlot(
-                                    handler.syncId,
-                                    slot, // use hotbarSlot here if this is the target slot
-                                    0,
-                                    SlotActionType.THROW,
-                                    client.player
-                            );
-                            LOGGER.info("dropped slot: "+slot);
-                    }
+    private void handleMinatestCommand(String arg) {
+        MinecraftClient client = MinecraftClient.getInstance();
+
+        switch (arg.toLowerCase()) {
+            case "port":
+                try (Socket socket = new Socket("127.0.0.1", PORT)) {
+                    client.inGameHud.getChatHud().addMessage(Text.literal("Port " + PORT + " is OPEN"));
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    client.inGameHud.getChatHud().addMessage(Text.literal("Port " + PORT + " is CLOSED"));
                 }
-            });
+                break;
 
+            case "last":
+                if (lastCommand.isEmpty()) {
+                    client.inGameHud.getChatHud().addMessage(Text.literal("No last command received yet"));
+                } else {
+                    client.inGameHud.getChatHud().addMessage(Text.literal("Last command: " + lastCommand));
+                }
+                break;
+
+            case "run":
+                if (client.player != null && client.player.currentScreenHandler != null) {
+                    ScreenHandler handler = client.player.currentScreenHandler;
+                    client.execute(() -> {
+                        try {
+                            client.interactionManager.clickSlot(handler.syncId, 0, 0, SlotActionType.PICKUP, client.player);
+                            client.inGameHud.getChatHud().addMessage(Text.literal("Test ran: pressed slot 0"));
+                        } catch (Exception e) {
+                            client.inGameHud.getChatHud().addMessage(Text.literal("Test failed: " + e.getMessage()));
+                        }
+                    });
+                }
+                break;
+
+            default:
+                client.inGameHud.getChatHud().addMessage(Text.literal("Unknown minatest arg: " + arg));
+                break;
+        }
+    }
+
+    private void sendToClient(String msg) {
+        try {
+            synchronized (sendLock) {
+                if (clientWriter != null) {
+                    clientWriter.write(msg + "\n");
+                    clientWriter.flush();
+                }
+            }
         } catch (Exception e) {
             e.printStackTrace();
         }
+    }
+
+    private void handleCommand(MinecraftClient client, String msg) {
+        lastCommand = msg; // store last received command
+        LOGGER.info("Received command: " + msg);
+        String[] parts = msg.split(" ");
+        if (parts.length < 2) return;
+
+        String cmd = parts[0].toUpperCase();
+        int slot = Integer.parseInt(parts[1]);
+        int slot2 = (parts.length > 2) ? Integer.parseInt(parts[2]) : 0;
+        final int hotbarSlot = Math.max(0, Math.min(slot2, 8));
+
+        if (client.player == null || client.player.currentScreenHandler == null) return;
+
+        ScreenHandler handler = client.player.currentScreenHandler;
+
+        client.execute(() -> {
+            try {
+                switch (cmd) {
+                    case "PRESS":
+                        client.interactionManager.clickSlot(handler.syncId, slot, 0, SlotActionType.PICKUP, client.player);
+                        LOGGER.info("Pressed slot: " + slot);
+                        break;
+
+                    case "SHIFTPRESS":
+                        client.interactionManager.clickSlot(handler.syncId, slot, 0, SlotActionType.QUICK_MOVE, client.player);
+                        LOGGER.info("Quick moved slot: " + slot);
+                        break;
+
+                    case "MOVE":
+                        client.interactionManager.clickSlot(handler.syncId, slot, 0, SlotActionType.PICKUP, client.player);
+                        Thread.sleep(50);
+                        client.interactionManager.clickSlot(handler.syncId, slot2, 0, SlotActionType.PICKUP, client.player);
+                        LOGGER.info("Moved slot: " + slot + " to slot: " + slot2);
+                        break;
+
+                    case "TOHOTBAR":
+                        client.interactionManager.clickSlot(handler.syncId, slot, hotbarSlot, SlotActionType.SWAP, client.player);
+                        LOGGER.info("Swapped slot: " + slot + " to hotbar slot: " + hotbarSlot);
+                        break;
+
+                    case "DROP":
+                        client.interactionManager.clickSlot(handler.syncId, slot, 1, SlotActionType.THROW, client.player);
+                        LOGGER.info("Dropped slot: " + slot);
+                        break;
+
+                    case "DROPONE":
+                        client.interactionManager.clickSlot(handler.syncId, slot, 0, SlotActionType.THROW, client.player);
+                        LOGGER.info("Dropped one from slot: " + slot);
+                        break;
+
+                    case "LOG":
+                        LOGGER.info("log command runned log that");
+                        client.inGameHud.getChatHud().addMessage(Text.literal("log command logged!"));
+                        break;
+
+                    case "INFO":
+                        String type = handler.getClass().getSimpleName();
+                        int totalslots = handler.slots.size();
+                        sendToClient(type + " " + totalslots);
+                        break;
+
+                    default:
+                        LOGGER.warn("Unknown command: " + cmd);
+                        break;
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        });
     }
 }
