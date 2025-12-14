@@ -28,6 +28,9 @@ public class MinescriptInventoryManipulationAddonClient implements ClientModInit
     private final BlockingQueue<String> commandQueue = new LinkedBlockingQueue<>();
     private String lastCommand = "";
 
+    private volatile ServerSocket serverSocket;
+    private volatile boolean serverRunning = false;
+
     @Override
     public void onInitializeClient() {
         System.out.println("MinaMod loaded (inventory manipulation addon)");
@@ -39,33 +42,64 @@ public class MinescriptInventoryManipulationAddonClient implements ClientModInit
 
     private void startTCPServer() {
         Thread serverThread = new Thread(() -> {
-            try (ServerSocket server = new ServerSocket(PORT)) {
+            try {
+                serverSocket = new ServerSocket(PORT);
+                serverRunning = true;
                 System.out.println("MinaMod TCP server running on " + PORT);
 
-                while (true) {
-                    Socket client = server.accept();
+                while (serverRunning) {
+                    try {
+                        Socket client = serverSocket.accept();
 
-                    BufferedReader reader = new BufferedReader(
-                            new InputStreamReader(client.getInputStream())
-                    );
+                        BufferedReader reader = new BufferedReader(
+                                new InputStreamReader(client.getInputStream())
+                        );
 
-                    clientWriter = new BufferedWriter(
-                            new OutputStreamWriter(client.getOutputStream())
-                    );
+                        clientWriter = new BufferedWriter(
+                                new OutputStreamWriter(client.getOutputStream())
+                        );
 
-                    String line;
-                    while ((line = reader.readLine()) != null) {
-                        commandQueue.offer(line);
+                        String line;
+                        while ((line = reader.readLine()) != null) {
+                            commandQueue.offer(line);
+                        }
+                    } catch (IOException e) {
+                        if (serverRunning) {
+                            e.printStackTrace();
+                        }
                     }
                 }
 
             } catch (Exception e) {
                 e.printStackTrace();
+            } finally {
+                try {
+                    if (serverSocket != null && !serverSocket.isClosed()) {
+                        serverSocket.close();
+                    }
+                } catch (IOException ignored) {}
             }
         });
 
         serverThread.setDaemon(true);
         serverThread.start();
+    }
+
+    private void stopTCPServer() {
+        serverRunning = false;
+        try {
+            if (serverSocket != null && !serverSocket.isClosed()) {
+                serverSocket.close();
+            }
+            System.out.println("TCP server stopped.");
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void reopenTCPServer() {
+        stopTCPServer();
+        startTCPServer();
     }
 
     private void startCommandProcessor() {
@@ -133,6 +167,11 @@ public class MinescriptInventoryManipulationAddonClient implements ClientModInit
                 }
                 break;
 
+            case "reopen":
+                reopenTCPServer();
+                client.inGameHud.getChatHud().addMessage(Text.literal("TCP server reopened."));
+                break;
+
             default:
                 client.inGameHud.getChatHud().addMessage(Text.literal("Unknown minatest arg: " + arg));
                 break;
@@ -153,7 +192,7 @@ public class MinescriptInventoryManipulationAddonClient implements ClientModInit
     }
 
     private void handleCommand(MinecraftClient client, String msg) {
-        lastCommand = msg; // store last received command
+        lastCommand = msg;
         LOGGER.info("Received command: " + msg);
         String[] parts = msg.split(" ");
         if (parts.length < 2) return;
@@ -210,7 +249,7 @@ public class MinescriptInventoryManipulationAddonClient implements ClientModInit
                     case "INFO":
                         String type = handler.getClass().getSimpleName();
                         int totalslots = handler.slots.size();
-                        sendToClient(type + " " + totalslots);
+                        sendToClient("INFO " + type + " " + totalslots);
                         break;
 
                     default:
